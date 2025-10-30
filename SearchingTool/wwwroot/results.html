@@ -1,0 +1,294 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Search Results</title>
+    <style>
+        body {
+            font-family: monospace;
+            margin: 20px;
+            background-color: #fdfdfd;
+        }
+
+        h1 {
+            font-size: 1.4rem;
+        }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 8px;
+            font-family: monospace;
+            font-size: 1rem;
+        }
+
+        button {
+            padding: 8px 12px;
+            font-family: monospace;
+            cursor: pointer;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        th, td {
+            border: 1px solid #ccc;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #eee;
+            cursor: pointer;
+        }
+
+        tr:hover {
+            background-color: #f3f3f3;
+        }
+
+        .pagination {
+            margin-top: 20px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+            .pagination button[disabled] {
+                background-color: #ddd;
+                cursor: not-allowed;
+            }
+
+        dialog {
+            font-family: monospace;
+            border: 1px solid #ccc;
+            padding: 20px;
+            width: 80%;
+            max-width: 600px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+            dialog::backdrop {
+                background: rgba(0, 0, 0, 0.3);
+            }
+
+        #abstractContent {
+            margin-bottom: 1em;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>📑 Results for Search <span id="searchIdLabel"></span></h1>
+    <div class="controls">
+        <input type="text" id="filterInput" placeholder="🔍 Filter results..." oninput="filterTable()">
+        <button onclick="exportCSV()">⬇️ Export CSV</button>
+        <button onclick="history.back()">← Back</button>
+    </div>
+    <table id="resultsTable">
+        <thead>
+            <tr>
+                <th onclick="sortTable(0)">Title</th>
+                <th onclick="sortTable(1)">DOI</th>
+                <th onclick="sortTable(2)">Authors</th>
+                <th onclick="sortTable(3)">Portal</th>
+                <th onclick="sortTable(4)">Year</th>
+                <th onclick="sortTable(5)">ISSN</th>
+                <th onclick="sortTable(6)">Categories</th>
+                <th>PDF</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+    <div class="pagination" id="pagination"></div>
+
+    <dialog id="abstractModal">
+        <h2 style="margin-top: 0; font-weight: bold;">📄 Abstract</h2>
+        <div id="abstractContent"></div>
+        <div style="display: flex; justify-content: flex-end; gap: 10px;">
+            <button onclick="copyAbstract()">📋 Copy Abstract</button>
+            <button onclick="document.getElementById('abstractModal').close()">Close</button>
+        </div>
+    </dialog>
+
+    <script>
+        const searchId = new URLSearchParams(window.location.search).get("searchId");
+        fetch("/search/history")
+            .then(res => res.json())
+            .then(data => {
+                const record = (data.$values || data).find(x => x.Id == searchId);
+                if (record) {
+                    document.getElementById("searchIdLabel").textContent = `"${record.QueryText}" (${record.StartYear})`;
+                } else {
+                    document.getElementById("searchIdLabel").textContent = `Search ID ${searchId}`;
+                }
+            });
+
+        let currentData = [];
+        let filteredData = [];
+        let currentPage = 1;
+        const pageSize = 50;
+        let sortAsc = true;
+
+        async function loadResults() {
+            try {
+                const res = await fetch(`/search/download/${searchId}`);
+                if (!res.ok) throw new Error("Failed to fetch results");
+                const data = await res.json();
+                currentData = data;
+                filteredData = data;
+                renderPage(1);
+                renderPagination();
+            } catch (err) {
+                alert("❌ Error: " + err.message);
+            }
+        }
+
+        function renderPage(page) {
+            currentPage = page;
+            const tbody = document.querySelector("#resultsTable tbody");
+            tbody.innerHTML = "";
+            const start = (page - 1) * pageSize;
+            const pageData = filteredData.slice(start, start + pageSize);
+
+            pageData.forEach(pub => {
+                const tr = document.createElement("tr");
+                tr.innerHTML = `
+              <td><a href="#" onclick="showAbstract(\`${escapeHtml(pub.Abstract || '')}\`); return false;">${escapeHtml(pub.Title || "")}</a></td>
+              <td>${pub.Doi || ""}</td>
+              <td>${(pub.Authors || []).join("; ")}</td>
+              <td>${pub.Portal || ""}</td>
+              <td>${pub.PublicationYear || ""}</td>
+              <td>${pub.Issn || ""}</td>
+              <td>${(pub.Categories || []).map(c => `${c.CategoryName}(Q${c.Quartile.replace(/^Q*/, '')})`).join("; ")}</td>
+              <td>${pub.PdfUrl ? `<a href="${pub.PdfUrl}" target="_blank">PDF</a>` : ""}</td>
+            `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function renderPagination() {
+            const totalPages = Math.ceil(filteredData.length / pageSize);
+            const container = document.getElementById("pagination");
+            container.innerHTML = "";
+
+            for (let i = 1; i <= totalPages; i++) {
+                const btn = document.createElement("button");
+                btn.textContent = i;
+                btn.disabled = i === currentPage;
+                btn.onclick = () => {
+                    renderPage(i);
+                    renderPagination();
+                };
+                container.appendChild(btn);
+            }
+        }
+
+        function filterTable() {
+            const input = document.getElementById("filterInput").value.toLowerCase();
+            filteredData = currentData.filter(pub => {
+                const content = `
+              ${pub.Title || ""}
+              ${pub.Doi || ""}
+              ${(pub.Authors || []).join(" ")}
+              ${pub.Portal || ""}
+              ${pub.PublicationYear || ""}
+              ${pub.Issn || ""}
+              ${(pub.Categories || []).map(c => `${c.CategoryName} ${c.Quartile}`).join(" ")}
+            `.toLowerCase();
+                return content.includes(input);
+            });
+            renderPage(1);
+            renderPagination();
+        }
+
+        function exportCSV() {
+            if (!filteredData.length) return;
+            const header = ["Title", "DOI", "Authors", "Portal", "Year", "ISSN", "Categories", "PDF"];
+            const rows = [header.join(",")];
+            filteredData.forEach(pub => {
+                const row = [
+                    (pub.Title || "").replace(/\"/g, '""'),
+                    pub.Doi || "",
+                    (pub.Authors || []).join("; "),
+                    pub.Portal || "",
+                    pub.PublicationYear || "",
+                    pub.Issn || "",
+                    (pub.Categories || []).map(c => `${c.CategoryName}(Q${c.Quartile.replace(/^Q*/, '')})`).join("; "),
+                    pub.PdfUrl || ""
+                ];
+                rows.push(row.map(cell => `"${cell}"`).join(","));
+            });
+            const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `Search_${searchId}_Results.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function sortTable(colIndex) {
+            const sorted = [...filteredData].sort((a, b) => {
+                const valA = getCellValue(a, colIndex).toLowerCase();
+                const valB = getCellValue(b, colIndex).toLowerCase();
+                return valA.localeCompare(valB) * (sortAsc ? 1 : -1);
+            });
+            sortAsc = !sortAsc;
+            filteredData = sorted;
+            renderPage(1);
+            renderPagination();
+        }
+
+        function getCellValue(pub, index) {
+            switch (index) {
+                case 0: return pub.Title || "";
+                case 1: return pub.Doi || "";
+                case 2: return (pub.Authors || []).join("; ");
+                case 3: return pub.Portal || "";
+                case 4: return pub.PublicationYear || "";
+                case 5: return pub.Issn || "";
+                case 6: return (pub.Categories || []).map(c => `${c.CategoryName}(Q${c.Quartile.replace(/^Q*/, '')})`).join("; ");
+                default: return "";
+            }
+        }
+
+        function escapeHtml(text) {
+            return text.replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/\"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        function showAbstract(text) {
+            const modal = document.getElementById("abstractModal");
+            document.getElementById("abstractContent").textContent = text;
+            modal.showModal();
+        }
+
+        function copyAbstract() {
+            const content = document.getElementById("abstractContent").textContent;
+            navigator.clipboard.writeText(content).then(() => {
+                alert("✅ Abstract copied to clipboard!");
+            }).catch(() => {
+                alert("❌ Failed to copy abstract.");
+            });
+        }
+
+        loadResults();
+    </script>
+</body>
+</html>
